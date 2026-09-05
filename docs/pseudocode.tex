@@ -1,0 +1,186 @@
+\documentclass[10pt,a4paper]{article}
+
+\usepackage[margin=2.4cm]{geometry}
+\usepackage{amsmath}
+\usepackage[T1]{fontenc}
+
+% ===== Font ==============================================================
+\usepackage{lmodern}
+
+% \usepackage{fontspec}
+% \setmainfont{Iosevka}
+%
+% \usepackage{fontspec}
+% \setmainfont{Iosevka}[
+%   Path        = ./,
+%   UprightFont = Iosevka-Regular.ttf,
+%   BoldFont    = Iosevka-Bold.ttf,
+%   ItalicFont  = Iosevka-Italic.ttf ]
+
+% ===== Pieces of a line look =====================================
+
+\newcommand{\proc}[1]{\textsf{#1}}              % procedure or constructor name
+\newcommand{\ty}[1]{\textsf{#1}}                % a type
+\newcommand{\kw}[1]{\textbf{#1}}                % keyword
+\newcommand{\id}[1]{\ensuremath{\mathit{#1}}}   % multi letter variable
+
+% ===== Layout of a line ==================================================
+
+\newcounter{pline}
+
+\newlength{\pnumw}      % width of the line number column
+\newlength{\pcodew}     % width of the code column, comments start after it
+\newlength{\pgap}       % blank space above each procedure header
+\setlength{\pnumw}{1.9em}
+\setlength{\pcodew}{0.52\textwidth}
+\setlength{\pgap}{3.2ex}
+
+% one level of indentation
+% for a vertical guide rule down each block, use instead
+%   \smash{\rule[-0.2em]{0.4pt}{1.35em}}\hspace{1.4em}
+\newcommand{\pind}{\hspace{1.6em}}
+
+% a comment, sitting to the right of the code
+\newcommand{\cmt}[1]{$\triangleright$~#1}
+
+% \ph{header}{comment} -- procedure header, unnumbered, restarts numbering
+% the trailing colon is put in here, so every header gets the same one
+\newcommand{\ph}[2]{%
+  \par\addvspace{\pgap}%
+  \setcounter{pline}{0}%
+  \noindent\makebox[\pnumw][r]{}\hspace{0.7em}%
+  \makebox[\pcodew][l]{#1:}#2\par}
+
+% \pl{indent}{code}{comment} -- one numbered line
+%   every line already sits one level in, under the header above it
+%   indent  : one \pind per further level of nesting, empty for none
+%   comment : usually empty, otherwise \cmt{...}
+\newcommand{\pl}[3]{%
+  \stepcounter{pline}%
+  \noindent\makebox[\pnumw][r]{\thepline}\hspace{0.7em}%
+  \makebox[\pcodew][l]{\pind#1#2}#3\par}
+
+\begin{document}
+
+\begin{center}
+  \textbf{\large Wait-free augmented static trie, recursive form}\\[0.5em]
+  keys are $1 \dots N$, with $N$ a power of two\\
+  a node or version reached with bounds $i$ and $j$ covers exactly the keys $i \dots j$\\
+  the fields an object was built with are read back with a dot, as in $x.\id{sum}$
+\end{center}
+\vspace{1em}
+
+% ===== The two kinds of object ===========================================
+
+\ph{\kw{type} \ty{versiontree}}{\cmt{one of two shapes, immutable once built}}
+\pl{}{\proc{vleaf}(\ty{nat} $i$, \ty{nat} \id{sum})}{\cmt{\id{sum} is $1$ if $i$ is in the set, else $0$}}
+\pl{}{\proc{vnode}(\ty{nat} $i$, \ty{nat} $j$, \ty{nat} \id{sum},
+      \ty{versiontree} \id{left}, \ty{versiontree} \id{right})}{}
+
+\ph{\kw{type} \ty{nodetree}}{\cmt{the skeleton, only its versions change}}
+\pl{}{\proc{nleaf}(\ty{nat} $i$, \ty{versiontree} \id{version})}{\cmt{\id{version} is the one mutable field}}
+\pl{}{\proc{nnode}(\ty{nat} $i$, \ty{nat} $j$, \ty{versiontree} \id{version},
+      \ty{nodetree} \id{left}, \ty{nodetree} \id{right})}{}
+
+% ===== Building the tree =================================================
+
+\ph{\ty{nodetree} \proc{build}(\ty{nat} $i$, \ty{nat} $j$)}{\cmt{built once, with every sum at 0}}
+\pl{}{\kw{if} $i = j$}{}
+\pl{\pind}{\kw{return} \proc{nleaf}($i$, \proc{vleaf}($i$, $0$))}{}
+\pl{}{$l$ $\leftarrow$ \proc{build}($i$, $(i+j)/2$)}{}
+\pl{}{$r$ $\leftarrow$ \proc{build}($(i+j)/2 + 1$, $j$)}{}
+\pl{}{\kw{return} \proc{nnode}($i$, $j$, \proc{vnode}($i$, $j$, $0$,
+      $l.\id{version}$, $r.\id{version}$), $l$, $r$)}{}
+
+\ph{Initialization}{}
+\pl{}{\ty{nodetree} \id{root} $\leftarrow$ \proc{build}($1$, $N$)}{\cmt{before any thread runs}}
+
+% ===== Updates ===========================================================
+
+\ph{\ty{bool} \proc{refresh}(\ty{nodetree} $x$, \ty{nat} $i$, \ty{nat} $j$)}{\cmt{fold the children's sums into $x$}}
+\pl{}{\id{old} $\leftarrow$ \kw{read} $x.\id{version}$}{}
+\pl{}{\id{vl} $\leftarrow$ \kw{read} $x.\id{left}.\id{version}$}{}
+\pl{}{\id{vr} $\leftarrow$ \kw{read} $x.\id{right}.\id{version}$}{}
+\pl{}{\kw{return} \proc{CAS}($x.\id{version}$, \id{old},
+      \proc{vnode}($i$, $j$, $\id{vl}.\id{sum} + \id{vr}.\id{sum}$, \id{vl}, \id{vr}))}{}
+
+\ph{\ty{bool} \proc{insert}(\ty{nodetree} $x$, \ty{nat} $i$, \ty{nat} $j$,
+    \ty{key} $k$)}{\cmt{add $k$, true iff $k$ was absent}}
+\pl{}{\kw{if} $i = j$}{}
+\pl{\pind}{\id{old} $\leftarrow$ \kw{read} $x.\id{version}$}{}
+\pl{\pind}{\kw{if} $\id{old}.\id{sum} = 1$}{}
+\pl{\pind\pind}{\kw{return} \proc{false}}{}
+\pl{\pind}{\kw{return} \proc{CAS}($x.\id{version}$, \id{old}, \proc{vleaf}($i$, $1$))}{}
+\pl{}{\kw{if} $k \le (i+j)/2$}{}
+\pl{\pind}{\id{result} $\leftarrow$ \proc{insert}($x.\id{left}$, $i$, $(i+j)/2$, $k$)}{}
+\pl{}{\kw{else}}{}
+\pl{\pind}{\id{result} $\leftarrow$ \proc{insert}($x.\id{right}$, $(i+j)/2 + 1$, $j$, $k$)}{}
+\pl{}{\kw{if} \kw{not} \proc{refresh}($x$, $i$, $j$)}{}
+\pl{\pind}{\proc{refresh}($x$, $i$, $j$)}{\cmt{two attempts always suffice}}
+\pl{}{\kw{return} \id{result}}{}
+
+\newpage
+
+\ph{\ty{bool} \proc{delete}(\ty{nodetree} $x$, \ty{nat} $i$, \ty{nat} $j$,
+    \ty{key} $k$)}{\cmt{as insert, but clears the leaf}}
+\pl{}{\kw{if} $i = j$}{}
+\pl{\pind}{\id{old} $\leftarrow$ \kw{read} $x.\id{version}$}{}
+\pl{\pind}{\kw{if} $\id{old}.\id{sum} = 0$}{}
+\pl{\pind\pind}{\kw{return} \proc{false}}{}
+\pl{\pind}{\kw{return} \proc{CAS}($x.\id{version}$, \id{old}, \proc{vleaf}($i$, $0$))}{}
+\pl{}{\kw{if} $k \le (i+j)/2$}{}
+\pl{\pind}{\id{result} $\leftarrow$ \proc{delete}($x.\id{left}$, $i$, $(i+j)/2$, $k$)}{}
+\pl{}{\kw{else}}{}
+\pl{\pind}{\id{result} $\leftarrow$ \proc{delete}($x.\id{right}$, $(i+j)/2 + 1$, $j$, $k$)}{}
+\pl{}{\kw{if} \kw{not} \proc{refresh}($x$, $i$, $j$)}{}
+\pl{\pind}{\proc{refresh}($x$, $i$, $j$)}{}
+\pl{}{\kw{return} \id{result}}{}
+
+% ===== Queries ===========================================================
+% the queries read one shared field and then walk frozen version objects
+
+\ph{\ty{versiontree} \proc{snapshot}()}{\cmt{the whole set at one instant, in one read}}
+\pl{}{\kw{return} \kw{read} $\id{root}.\id{version}$}{\cmt{it covers $1 \dots N$ and cannot change}}
+
+\ph{\ty{bool} \proc{find}(\ty{key} $k$)}{\cmt{is $k$ in the set}}
+\pl{}{\kw{return} \proc{find\_at}(\proc{snapshot}(), $1$, $N$, $k$)}{}
+
+\ph{\ty{bool} \proc{find\_at}(\ty{versiontree} $v$, \ty{nat} $i$, \ty{nat} $j$,
+    \ty{key} $k$)}{\cmt{plain sequential code, $v$ is frozen}}
+\pl{}{\kw{if} $i = j$}{}
+\pl{\pind}{\kw{return} $v.\id{sum} = 1$}{}
+\pl{}{\kw{if} $k \le (i+j)/2$}{}
+\pl{\pind}{\kw{return} \proc{find\_at}($v.\id{left}$, $i$, $(i+j)/2$, $k$)}{}
+\pl{}{\kw{return} \proc{find\_at}($v.\id{right}$, $(i+j)/2 + 1$, $j$, $k$)}{}
+
+\ph{\ty{nat} \proc{size}()}{\cmt{answered by a single read}}
+\pl{}{\kw{return} $\proc{snapshot}().\id{sum}$}{}
+
+\ph{\ty{int} \proc{select}(\ty{nat} $r$)}{\cmt{the $r$th smallest key, $-1$ if none}}
+\pl{}{$v$ $\leftarrow$ \proc{snapshot}()}{}
+\pl{}{\kw{if} $v.\id{sum} < r$}{}
+\pl{\pind}{\kw{return} $-1$}{}
+\pl{}{\kw{return} \proc{select\_at}($v$, $1$, $N$, $r$)}{}
+
+\ph{\ty{key} \proc{select\_at}(\ty{versiontree} $v$, \ty{nat} $i$, \ty{nat} $j$,
+    \ty{nat} $r$)}{\cmt{assumes $r \le v.\id{sum}$, so it finds one}}
+\pl{}{\kw{if} $i = j$}{}
+\pl{\pind}{\kw{return} $i$}{}
+\pl{}{\kw{if} $r \le v.\id{left}.\id{sum}$}{}
+\pl{\pind}{\kw{return} \proc{select\_at}($v.\id{left}$, $i$, $(i+j)/2$, $r$)}{}
+\pl{}{\kw{return} \proc{select\_at}($v.\id{right}$, $(i+j)/2 + 1$, $j$,
+      $r - v.\id{left}.\id{sum}$)}{}
+
+\ph{\ty{nat} \proc{rank}(\ty{key} $k$)}{\cmt{how many keys are at most $k$}}
+\pl{}{\kw{return} \proc{rank\_at}(\proc{snapshot}(), $1$, $N$, $k$)}{}
+
+\ph{\ty{nat} \proc{rank\_at}(\ty{versiontree} $v$, \ty{nat} $i$, \ty{nat} $j$,
+    \ty{key} $k$)}{\cmt{the same count, taken inside $v$}}
+\pl{}{\kw{if} $i = j$}{}
+\pl{\pind}{\kw{return} $v.\id{sum}$}{}
+\pl{}{\kw{if} $k \le (i+j)/2$}{}
+\pl{\pind}{\kw{return} \proc{rank\_at}($v.\id{left}$, $i$, $(i+j)/2$, $k$)}{}
+\pl{}{\kw{return} $v.\id{left}.\id{sum} + {}$\proc{rank\_at}($v.\id{right}$,
+      $(i+j)/2 + 1$, $j$, $k$)}{}
+
+\end{document}
