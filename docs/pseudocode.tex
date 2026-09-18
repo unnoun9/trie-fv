@@ -65,12 +65,13 @@
 \begin{center}
   \textbf{\large Wait-free augmented static trie, recursive form}\\[0.5em]
   keys are $1 \dots N$, with $N$ a power of two\\
-  a node or version reached with bounds $i$ and $j$ covers exactly the keys $i \dots j$\\
-  the fields an object was built with are read back with a dot, as in $x.\id{sum}$
+  every recursive component reached with bounds $i$ and $j$ covers exactly the keys $i \dots j$\\
+  the fields a value was built with are read back with a dot, as in $x.\id{sum}$\\
+  an internal component has the form $C[X,Y]$: one node with two recursive children
 \end{center}
 \vspace{1em}
 
-% ===== The two kinds of object ===========================================
+% ===== The two recursive data types ======================================
 
 \ph{\kw{type} \ty{versiontree}}{\cmt{one of two shapes, immutable once built}}
 \pl{}{\proc{vleaf}(\ty{nat} $i$, \ty{nat} \id{sum})}{\cmt{\id{sum} is $1$ if $i$ is in the set, else $0$}}
@@ -82,6 +83,11 @@
 \pl{}{\proc{nnode}(\ty{nat} $i$, \ty{nat} $j$, \ty{versiontree} \id{version},
       \ty{nodetree} \id{left}, \ty{nodetree} \id{right})}{}
 
+% ===== The child operation used by every recursive component =============
+
+\ph{\ty{versiontree} \proc{snapshot}(\ty{nodetree} $x$)}{\cmt{atomic read of the x's version}}
+\pl{}{\kw{return} \kw{read} $x.\id{version}$}
+
 % ===== Building the tree =================================================
 
 \ph{\ty{nodetree} \proc{build}(\ty{nat} $i$, \ty{nat} $j$)}{\cmt{built once, with every sum at 0}}
@@ -89,18 +95,20 @@
 \pl{\pind}{\kw{return} \proc{nleaf}($i$, \proc{vleaf}($i$, $0$))}{}
 \pl{}{$l$ $\leftarrow$ \proc{build}($i$, $(i+j)/2$)}{}
 \pl{}{$r$ $\leftarrow$ \proc{build}($(i+j)/2 + 1$, $j$)}{}
+\pl{}{$v_l$ $\leftarrow$ \proc{snapshot}($l$)}{}
+\pl{}{$v_r$ $\leftarrow$ \proc{snapshot}($r$)}{}
 \pl{}{\kw{return} \proc{nnode}($i$, $j$, \proc{vnode}($i$, $j$, $0$,
-      $l.\id{version}$, $r.\id{version}$), $l$, $r$)}{}
+      $v_l$, $v_r$), $l$, $r$)}{}
 
 \ph{Initialization}{}
 \pl{}{\ty{nodetree} \id{root} $\leftarrow$ \proc{build}($1$, $N$)}{\cmt{before any thread runs}}
 
 % ===== Updates ===========================================================
 
-\ph{\ty{bool} \proc{refresh}(\ty{nodetree} $x$, \ty{nat} $i$, \ty{nat} $j$)}{\cmt{fold the children's sums into $x$}}
+\ph{\ty{bool} \proc{refresh}(\ty{nodetree} $x$, \ty{nat} $i$, \ty{nat} $j$)}{\cmt{one node reads its two child components}}
 \pl{}{\id{old} $\leftarrow$ \kw{read} $x.\id{version}$}{}
-\pl{}{\id{vl} $\leftarrow$ \kw{read} $x.\id{left}.\id{version}$}{}
-\pl{}{\id{vr} $\leftarrow$ \kw{read} $x.\id{right}.\id{version}$}{}
+\pl{}{\id{vl} $\leftarrow$ \proc{snapshot}($x.\id{left}$)}{}
+\pl{}{\id{vr} $\leftarrow$ \proc{snapshot}($x.\id{right}$)}{}
 \pl{}{\kw{return} \proc{CAS}($x.\id{version}$, \id{old},
       \proc{vnode}($i$, $j$, $\id{vl}.\id{sum} + \id{vr}.\id{sum}$, \id{vl}, \id{vr}))}{}
 
@@ -137,13 +145,11 @@
 \pl{}{\kw{return} \id{result}}{}
 
 % ===== Queries ===========================================================
-% the queries read one shared field and then walk frozen version objects
-
-\ph{\ty{versiontree} \proc{snapshot}()}{\cmt{the whole set at one instant, in one read}}
-\pl{}{\kw{return} \kw{read} $\id{root}.\id{version}$}{\cmt{it covers $1 \dots N$ and cannot change}}
+% The public query starts by applying the same child operation to root.
+% Calls to snapshot on a child are internal component interactions.
 
 \ph{\ty{bool} \proc{find}(\ty{key} $k$)}{\cmt{is $k$ in the set}}
-\pl{}{\kw{return} \proc{find\_at}(\proc{snapshot}(), $1$, $N$, $k$)}{}
+\pl{}{\kw{return} \proc{find\_at}(\proc{snapshot}(\id{root}), $1$, $N$, $k$)}{}
 
 \ph{\ty{bool} \proc{find\_at}(\ty{versiontree} $v$, \ty{nat} $i$, \ty{nat} $j$,
     \ty{key} $k$)}{\cmt{plain sequential code, $v$ is frozen}}
@@ -154,10 +160,10 @@
 \pl{}{\kw{return} \proc{find\_at}($v.\id{right}$, $(i+j)/2 + 1$, $j$, $k$)}{}
 
 \ph{\ty{nat} \proc{size}()}{\cmt{answered by a single read}}
-\pl{}{\kw{return} $\proc{snapshot}().\id{sum}$}{}
+\pl{}{\kw{return} $\proc{snapshot}(\id{root}).\id{sum}$}{}
 
 \ph{\ty{int} \proc{select}(\ty{nat} $r$)}{\cmt{the $r$th smallest key, $-1$ if none}}
-\pl{}{$v$ $\leftarrow$ \proc{snapshot}()}{}
+\pl{}{$v$ $\leftarrow$ \proc{snapshot}(\id{root})}{}
 \pl{}{\kw{if} $v.\id{sum} < r$}{}
 \pl{\pind}{\kw{return} $-1$}{}
 \pl{}{\kw{return} \proc{select\_at}($v$, $1$, $N$, $r$)}{}
@@ -172,7 +178,7 @@
       $r - v.\id{left}.\id{sum}$)}{}
 
 \ph{\ty{nat} \proc{rank}(\ty{key} $k$)}{\cmt{how many keys are at most $k$}}
-\pl{}{\kw{return} \proc{rank\_at}(\proc{snapshot}(), $1$, $N$, $k$)}{}
+\pl{}{\kw{return} \proc{rank\_at}(\proc{snapshot}(\id{root}), $1$, $N$, $k$)}{}
 
 \ph{\ty{nat} \proc{rank\_at}(\ty{versiontree} $v$, \ty{nat} $i$, \ty{nat} $j$,
     \ty{key} $k$)}{\cmt{the same count, taken inside $v$}}
