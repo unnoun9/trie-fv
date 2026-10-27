@@ -1,100 +1,154 @@
 From Trie Require Import abs_aut conc_aut.
 
-(* ################################################################# *)
-(** * Refinement, and forward simulation as the way to prove it *)
+(*  ###############################################################  *)
+(*  Refinement, and forward simulation as the way to prove it  *)
 
-(* ================================================================= *)
-(** ** Running a schedule in two halves *)
+(*  ===============================================================  *)
+(*  Running an execution in two halves  *)
 
-(** Running s1 followed by s2 is running s1, then running s2 from where that
-    left off, and sticking the two traces together.
+(*  Replaying e1 followed by e2 is replaying e1, then replaying e2 from where
+    that left off, with the two traces stuck together.  *)
 
-    i and j are the interval, s1 and s2 the two halves, a the starting
-    configuration. This is needed in soundness proof below *)
-
-Lemma abs_run_app : forall (i j : nat) (s1 s2 : list (tid * action)) (a : abs_config),
-  abs_run i j a (s1 ++ s2)
-  = (fst (abs_run i j (fst (abs_run i j a s1)) s2),
-     snd (abs_run i j a s1)
-     ++ snd (abs_run i j (fst (abs_run i j a s1)) s2)).
+Lemma abs_run_app : forall (i j : nat) (e1 e2 : execution) (c : abs_config),
+  abs_run i j c (e1 ++ e2)
+  = (fst (abs_run i j (fst (abs_run i j c e1)) e2),
+     snd (abs_run i j c e1)
+     ++ snd (abs_run i j (fst (abs_run i j c e1)) e2)).
 Proof.
-  intros i j s1.
-  induction s1 as [| [t act] rest IH]; intros s2 a; simpl.
-  - destruct (abs_run i j a s2). reflexivity.
-  - destruct (abs_next i j a t act) as [a1 evs] eqn:E1. simpl.
+  intros i j e1.
+  induction e1 as [| [t act] rest IH]; intros e2 c; simpl.
+  - destruct (abs_run i j c e2). reflexivity.
+  - destruct (abs_next i j c t act) as [c1 evs] eqn:E1. simpl.
     rewrite IH. simpl.
-    destruct (abs_run i j a1 rest) as [a2 evs'] eqn:E2. simpl.
-    destruct (abs_run i j a2 s2) as [a3 evs''] eqn:E3. simpl.
+    destruct (abs_run i j c1 rest) as [c2 evs'] eqn:E2. simpl.
+    destruct (abs_run i j c2 e2) as [c3 evs''] eqn:E3. simpl.
     rewrite app_assoc. reflexivity.
 Qed.
 
-(* ================================================================= *)
-(** ** What we have to prove *)
+(*  and legality behaves the same way; if the first half is something the
+    machine could have done, and the second half is something it could have
+    done from where the first half ended, then so is the whole  *)
 
-(** The concrete component c refines the abstract component a when every
-    trace c can produce, a can produce too.
+Lemma abs_legal_app : forall (i j : nat) (e1 e2 : execution) (c : abs_config),
+  abs_legal i j c e1 = true ->
+  abs_legal i j (fst (abs_run i j c e1)) e2 = true ->
+  abs_legal i j c (e1 ++ e2) = true.
+Proof.
+  intros i j e1.
+  induction e1 as [| [t act] rest IH]; intros e2 c H1 H2; simpl in *.
+  - exact H2.
+  - apply Bool.andb_true_iff in H1 as [Hen Hrest].
+    rewrite Hen. simpl.
+    destruct (abs_next i j c t act) as [c1 evs] eqn:E1. simpl in *.
+    apply IH.
+    + exact Hrest.
+    + destruct (abs_run i j c1 rest). simpl in *. exact H2.
+Qed.
+
+(*  ===============================================================  *)
+(*  What we have to prove  *)
+
+(*  The concrete component c refines the abstract component a when, whatever
+    the threads were told to do and whatever order turns in, the trace that
+    comes out is one the abstract component could have produced as well via
+    some execution.
 
     Arguments: i and j the interval both are over, c the concrete starting
     configuration, a the abstract one. Returns a Prop.
 
-    Note that the legality hypothesis is not needed because a step that isn't
-    enabled stutters in both machines, and the stutters can be deleted without
-    changing the trace. *)
+    Every execution mentioned here is one a machine could really have performed
+    (legal). On the left the execution is generated from a schedule and the
+    programs, so it is legal by conc_exec_legal. On the right the legality is
+    demanded outright. The schedules are not required to match, and they could
+    not be. One operation is three turns in the abstract machine and up to
+    eleven in the concrete. So traces, what outsiders observe, are compared.  *)
 
 Definition refines (i j : nat) (c : conc_config) (a : abs_config) : Prop :=
-  forall csched : list (tid * action),
-    exists asched : list (tid * action),
-      conc_trace i j c csched = abs_trace_from i j a asched.
+  forall (sigma : sched) (P : progs),
+    wf_progs i j P ->
+    exists e : execution,
+      abs_legal i j a e = true
+      /\ conc_trace i j c sigma P = abs_trace_from i j a e.
 
-(* ================================================================= *)
-(** ** Forward simulation *)
+(*  ===============================================================  *)
+(*  Forward simulation  *)
 
-(** R is a forward simulation when every single concrete step can be answered
-    by some abstract steps that emit the same events, landing back to R.
+(*  R is a forward simulation when every single concrete step can be answered
+    by a stretch of abstract execution that emits the same events and R still
+    holds.
 
     Argument: R a relation between concrete and abstract configurations.
     Returns a Prop.
+    
+    concrete:   c  ----- one step -------->  c'
+                |                            |
+                R                            R
+                |                            |
+    abstract:   a  ----- e (any length) -->  a'
 
-    Note that the abstract side is a whole schedule, not one action. It has
-    to be since in many cases one concrete step is answered by mange abstract
-    steps (be them be empty or containing a linearization point).
+    and both arrows emit the same events
 
-    Also, the events must agree exactly, which is what ties the two machines
-    together.
+    Note: The abstract answer is a stretch of a (legal) execution rather than
+    one action. It has to be, because the two machines run at different speeds.
+    Also, this only says R, once it holds, keeps holding, not that it holds to
+    begin with. The events must also agree exactly.  *)
 
-    There is no hypothesis that the concrete step was enabled. It again is
-    not needed since a disabled step stutters and emits nothing, so it is
-    answered by the empty schedule *)
+Definition forward_simulation (i j : nat) (R : conc_config -> abs_config -> Prop) : Prop :=
+  forall (c c' : conc_config) (t : tid) (act : action) (evs : list event)
+         (a : abs_config),
+    conc_next i j c t act = (c', evs) ->     (*  c steps to c', emitting evs  *)
+    R c a ->                                 (*  c and a are related  *)
+    exists (e : execution) (a' : abs_config),
+      abs_run i j a e = (a', evs)            (*  e takes a to a', emitting evs too  *)
+      /\ abs_legal i j a e = true            (*  e is a real abstract run  *)
+      /\ R c' a'.                            (*  c' and a' are related again  *)
 
-Definition simulates (i j : nat) (R : conc_config -> abs_config -> Prop) : Prop :=
-  forall (c : conc_config) (a : abs_config) (t : tid) (act : action),
-    R c a ->
-    exists asched : list (tid * action),
-      R (fst (conc_next i j c t act)) (fst (abs_run i j a asched))
-      /\ snd (conc_next i j c t act) = snd (abs_run i j a asched).
+(*  If R is a forward simulation, and R relates the two starting
+    configurations, then the concrete component refines the abstract one.
 
-(** and a forward simulation is enough if R relates the two starting
-    configurations and R is a simulation, then the concrete component
-    refines the abstract one.
+    The proof walks down the schedule one turn at a time. Each turn is one
+    concrete step, forward_simulation hands back a stretch of abstract execution
+    for it, which are joined together with abs_run_app and abs_legal_app.
 
-    Note that this proof doesn't mention anything about the trie, so it can be used
-    in many places. Very useful. *)
+    The induction has three cases, because conc_exec does. A busy thread
+    taking its forced action and an idle thread announcing the next
+    operation of its program both put one step in front of the rest, and are
+    handled together by Hmove. A thread whose program has run out has its
+    turn skipped, so nothing happens and there is nothing to answer.
 
-Theorem simulation_sound : forall (i j : nat) (R : conc_config -> abs_config -> Prop),
-  simulates i j R ->
-  forall (c : conc_config) (a : abs_config),
-    R c a -> refines i j c a.
+    Nothing in this proof mentions the trie, so it is done once here and used
+    for every refinement. *)
+
+Theorem forward_simulation_refines :
+  forall (i j : nat) (R : conc_config -> abs_config -> Prop)
+         (c : conc_config) (a : abs_config),
+  forward_simulation i j R ->
+  R c a ->
+  refines i j c a.
 Proof.
-  intros i j R Hsim c a HR csched. revert c a HR.
-  induction csched as [| [t act] rest IH]; intros c a HR.
-  - exists []. reflexivity.
-  - destruct (Hsim c a t act HR) as [as1 [HR' Hev]].
-    destruct (IH (fst (conc_next i j c t act))
-                 (fst (abs_run i j a as1)) HR') as [as2 Heq].
-    exists (as1 ++ as2).
-    unfold conc_trace, abs_trace_from in *.
-    rewrite abs_run_app. simpl.
-    destruct (conc_next i j c t act) as [c1 evs] eqn:E1. simpl in *.
-    destruct (conc_run i j c1 rest) as [c2 evs'] eqn:E2. simpl in *.
-    rewrite Hev, Heq. reflexivity.
+  intros i j R c a Hsim HR sigma P _.
+  unfold conc_trace, conc_trace_from, abs_trace_from.
+  revert P c a HR.
+  induction sigma as [| t rest IH]; intros P c a HR.
+  - exists []. split; reflexivity.
+  - assert (Hmove : forall (act : action) (Q : progs),
+      exists e : execution,
+        abs_legal i j a e = true
+        /\ snd (conc_run i j c
+                  ((t, act) :: conc_exec i j (fst (conc_next i j c t act)) rest Q))
+           = snd (abs_run i j a e)).
+    { intros act Q.
+      destruct (conc_next i j c t act) as [c1 evs] eqn:E1.
+      destruct (Hsim c c1 t act evs a E1 HR) as [e1 [a1 [Hrun1 [Hleg1 HR1]]]].
+      destruct (IH Q c1 a1 HR1) as [e2 [Hleg2 Hev2]].
+      exists (e1 ++ e2). rewrite abs_run_app, Hrun1. simpl. rewrite E1.
+      destruct (conc_run i j c1 (conc_exec i j c1 rest Q)) as [c2 evs'] eqn:E2.
+      simpl in *. split.
+      - apply abs_legal_app. exact Hleg1. rewrite Hrun1. exact Hleg2.
+      - rewrite Hev2. reflexivity. }
+    simpl. destruct (conc_busy_act (cstate c t)) as [act |] eqn:Eb.
+    + apply (Hmove act P).
+    + destruct (P t) as [| o os] eqn:EP.
+      * apply IH. exact HR.
+      * apply (Hmove (act_invoke o) (upd P t os)).
 Qed.

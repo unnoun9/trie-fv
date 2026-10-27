@@ -1,6 +1,6 @@
 .PHONY: all clean
 build_dir := build
-src := abs_aut abs_ex conc_aut conc_ex sim
+src := abs_aut abs_next_versions abs_ex conc_aut conc_ex sim
 
 all: $(src)
 
@@ -10,7 +10,8 @@ all: $(src)
 	rocq compile -Q build Trie $< -o $(build_dir)/$@.vo
 
 # what each file requires has to be compiled first
-abs_ex conc_aut: abs_aut 
+abs_next_versions conc_aut: abs_aut
+abs_ex: abs_next_versions
 conc_ex sim: conc_aut
 
 clean:
